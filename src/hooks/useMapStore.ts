@@ -31,6 +31,7 @@ interface MapState {
   filteredNodeIds: string[] | null;
 
   initSession: () => Promise<void>;
+  syncFromStorage: (session: MapSession) => void;
   addNode: (params: AddNodeParams) => MapNode;
   updateNode: (nodeId: string, updates: Partial<MapNode>) => void;
   removeNode: (nodeId: string) => void;
@@ -49,6 +50,7 @@ interface MapState {
   newSession: (name?: string) => Promise<void>;
   renameSession: (name: string) => void;
   deleteCurrentSession: () => Promise<void>;
+  deleteSessionById: (id: string) => Promise<void>;
   clearSession: () => void;
   getNodePositions: () => Record<string, NodePosition>;
   getStats: () => SessionStats;
@@ -87,50 +89,58 @@ export const useMapStore = create<MapState>((set, get) => ({
     }
   },
 
+  // Sync data from chrome.storage (background writes, we read)
+  syncFromStorage: (session: MapSession) => {
+    const state = get();
+
+    // Don't sync if we're viewing a different session
+    if (state.session && state.session.id !== session.id) return;
+
+    // Check if data actually changed
+    const currentNodeCount = Object.keys(state.nodes).length;
+    const newNodeCount = Object.keys(session.nodes || {}).length;
+    const currentEdgeCount = state.edges.length;
+    const newEdgeCount = (session.edges || []).length;
+
+    if (currentNodeCount === newNodeCount && currentEdgeCount === newEdgeCount) {
+      // Only update titles/favicons/isActive without re-rendering tree
+      let changed = false;
+      const updatedNodes = { ...state.nodes };
+      for (const [id, newNode] of Object.entries(session.nodes || {})) {
+        const old = updatedNodes[id];
+        if (old && (old.title !== newNode.title || old.favicon !== newNode.favicon || old.isActive !== newNode.isActive)) {
+          updatedNodes[id] = { ...old, title: newNode.title, favicon: newNode.favicon, isActive: newNode.isActive };
+          changed = true;
+        }
+      }
+      if (changed) {
+        set({ nodes: updatedNodes, session: { ...session, nodes: updatedNodes } });
+      }
+      return;
+    }
+
+    // Real structural change — new nodes or edges
+    const shouldFit = currentNodeCount === 0 && newNodeCount > 0;
+
+    set({
+      session,
+      nodes: session.nodes || {},
+      edges: session.edges || [],
+      rootNodes: session.rootNodes || [],
+    });
+
+    // Auto-fit when first nodes appear
+    if (shouldFit) {
+      setTimeout(() => get().fitToView(), 200);
+    }
+  },
+
+  // Used only for demo data / manual additions from the map page
   addNode: (params) => {
     const state = get();
     const domain = extractDomain(params.url);
-
-    // Deduplicate: same URL + same tab + same parent + within 2 seconds
     const now = Date.now();
-    const duplicate = Object.values(state.nodes).find(
-      (n) =>
-        n.url === params.url &&
-        n.tabId === params.tabId &&
-        n.parentId === params.parentId &&
-        now - n.timestamp < 2000,
-    );
-    if (duplicate) return duplicate;
 
-    // Revisit: same URL + same tab (different parent = new path, OK)
-    const revisit = Object.values(state.nodes).find(
-      (n) =>
-        n.url === params.url &&
-        n.tabId === params.tabId &&
-        n.parentId === params.parentId &&
-        now - n.timestamp >= 2000,
-    );
-    if (revisit) {
-      const updated = {
-        ...revisit,
-        visitCount: revisit.visitCount + 1,
-        lastVisited: now,
-        isActive: true,
-        title: params.title || revisit.title,
-        favicon: params.favicon || revisit.favicon,
-      };
-      const newNodes = { ...state.nodes };
-      for (const [id, node] of Object.entries(newNodes)) {
-        if (node.tabId === params.tabId) {
-          newNodes[id] = { ...node, isActive: false };
-        }
-      }
-      newNodes[revisit.id] = updated;
-      set({ nodes: newNodes });
-      return updated;
-    }
-
-    // ===== Create new node =====
     const nodeId = generateId();
     const parentNode = params.parentId ? state.nodes[params.parentId] : null;
     const depth = parentNode ? parentNode.depth + 1 : 0;
@@ -156,46 +166,35 @@ export const useMapStore = create<MapState>((set, get) => ({
     };
 
     const newNodes = { ...state.nodes };
-
-    // Deactivate other nodes on same tab
     for (const [id, node] of Object.entries(newNodes)) {
       if (node.tabId === params.tabId) {
         newNodes[id] = { ...node, isActive: false };
       }
     }
-
     newNodes[nodeId] = newNode;
 
-    // Parent-child linking
     let newRootNodes = [...state.rootNodes];
-    const hasValidParent = params.parentId && newNodes[params.parentId];
-
-    if (hasValidParent) {
-      newNodes[params.parentId!] = {
-        ...newNodes[params.parentId!],
-        children: [...newNodes[params.parentId!].children, nodeId],
+    if (params.parentId && newNodes[params.parentId]) {
+      newNodes[params.parentId] = {
+        ...newNodes[params.parentId],
+        children: [...newNodes[params.parentId].children, nodeId],
       };
     } else {
       newRootNodes.push(nodeId);
     }
 
-    // Edge
-    const newEdges = hasValidParent
-      ? [
-          ...state.edges,
-          {
-            id: `${params.parentId}-${nodeId}`,
-            sourceId: params.parentId!,
-            targetId: nodeId,
-            type: (params.edgeType || 'click') as EdgeType,
-            timestamp: now,
-          },
-        ]
+    const newEdges = params.parentId && newNodes[params.parentId]
+      ? [...state.edges, {
+          id: `${params.parentId}-${nodeId}`,
+          sourceId: params.parentId,
+          targetId: nodeId,
+          type: (params.edgeType || 'click') as EdgeType,
+          timestamp: now,
+        }]
       : [...state.edges];
 
     set({ nodes: newNodes, edges: newEdges, rootNodes: newRootNodes });
-    setTimeout(() => get().saveSession(), 300);
-
+    setTimeout(() => get().saveSession(), 200);
     return newNode;
   },
 
@@ -208,10 +207,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   removeNode: (nodeId) => {
     const { nodes, edges, rootNodes } = get();
     const toRemove = new Set<string>();
-    const collect = (id: string) => {
-      toRemove.add(id);
-      nodes[id]?.children.forEach(collect);
-    };
+    const collect = (id: string) => { toRemove.add(id); nodes[id]?.children.forEach(collect); };
     collect(nodeId);
 
     const newNodes = { ...nodes };
@@ -243,7 +239,6 @@ export const useMapStore = create<MapState>((set, get) => ({
 
   selectNode: (id) => set({ selectedNodeId: id }),
   hoverNode: (id) => set({ hoveredNodeId: id }),
-
   setViewport: (v) => set((s) => ({ viewport: { ...s.viewport, ...v } })),
 
   zoomIn: () => {
@@ -280,9 +275,7 @@ export const useMapStore = create<MapState>((set, get) => ({
     const cw = maxX - minX + pad * 2;
     const ch = maxY - minY + pad * 2;
     const zoom = Math.min(vp.width / cw, vp.height / ch, 1.5);
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
     set({ viewport: { ...vp, x: vp.width / 2 - cx * zoom, y: vp.height / 2 - cy * zoom, zoom } });
   },
 
@@ -290,16 +283,13 @@ export const useMapStore = create<MapState>((set, get) => ({
     const { viewport: vp } = get();
     const pos = get().getNodePositions()[nodeId];
     if (!pos) return;
-    set({
-      viewport: {
-        ...vp,
-        x: vp.width / 2 - (pos.x + pos.width / 2) * vp.zoom,
-        y: vp.height / 2 - (pos.y + pos.height / 2) * vp.zoom,
-      },
-    });
+    set({ viewport: { ...vp, x: vp.width / 2 - (pos.x + pos.width / 2) * vp.zoom, y: vp.height / 2 - (pos.y + pos.height / 2) * vp.zoom } });
   },
 
-  setRecording: (r) => set({ isRecording: r }),
+  setRecording: (r) => {
+    set({ isRecording: r });
+    chrome.runtime.sendMessage({ type: r ? 'GET_RECORDING_STATE' : 'TOGGLE_RECORDING' }).catch(() => {});
+  },
 
   setSearchQuery: (q) => {
     const { nodes } = get();
@@ -330,22 +320,25 @@ export const useMapStore = create<MapState>((set, get) => ({
     const session = sessions.find((s) => s.id === id);
     if (session) {
       set({
-        session, nodes: session.nodes || {}, edges: session.edges || [],
-        rootNodes: session.rootNodes || [], selectedNodeId: null, isLoading: false,
+        session,
+        nodes: session.nodes || {},
+        edges: session.edges || [],
+        rootNodes: session.rootNodes || [],
+        selectedNodeId: null,
+        isLoading: false,
       });
       await storage.setActiveSession(session);
+      setTimeout(() => get().fitToView(), 200);
     } else {
       set({ isLoading: false });
     }
   },
 
   newSession: async (name = 'New Session') => {
-    // Save current session first
     const { session } = get();
     if (session && Object.keys(get().nodes).length > 0) {
       await get().saveSession();
     }
-
     const s: MapSession = {
       id: generateId(), name,
       nodes: {}, edges: [], rootNodes: [],
@@ -359,16 +352,25 @@ export const useMapStore = create<MapState>((set, get) => ({
   renameSession: (name) => {
     const { session } = get();
     if (!session) return;
-    set({ session: { ...session, name } });
-    get().saveSession();
+    const updated = { ...session, name, updatedAt: Date.now() };
+    set({ session: updated });
+    storage.setActiveSession(updated);
   },
 
   deleteCurrentSession: async () => {
     const { session } = get();
-    if (!session) return;
-    await storage.deleteSession(session.id);
+    if (session) await storage.deleteSession(session.id);
     await storage.clearActiveSession();
     await get().newSession('New Session');
+  },
+
+  deleteSessionById: async (id) => {
+    const { session } = get();
+    await storage.deleteSession(id);
+    if (session?.id === id) {
+      await storage.clearActiveSession();
+      await get().newSession('New Session');
+    }
   },
 
   clearSession: () => {

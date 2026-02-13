@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useMapStore } from '@/hooks/useMapStore';
 import { useSettingsStore } from '@/hooks/useSettingsStore';
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary';
@@ -8,14 +8,17 @@ import { Header } from '@/components/layout/Header';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { StatusBar } from '@/components/layout/StatusBar';
 import { Logo } from '@/components/shared/Logo';
+import type { MapSession } from '@/types/map';
 
 export const MapApp: React.FC = () => {
   const initSession = useMapStore((s) => s.initSession);
+  const syncFromStorage = useMapStore((s) => s.syncFromStorage);
   const isLoading = useMapStore((s) => s.isLoading);
   const loadSettings = useSettingsStore((s) => s.loadSettings);
   const [showSearch, setShowSearch] = useState(false);
   const initialized = useRef(false);
 
+  // Init
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
@@ -23,91 +26,48 @@ export const MapApp: React.FC = () => {
     initSession();
   }, [loadSettings, initSession]);
 
-  // Poll storage for updates from background script
+  // Poll storage for updates from background
   useEffect(() => {
-    const interval = setInterval(async () => {
-      const state = useMapStore.getState();
-      if (!state.session) return;
+    let lastUpdate = 0;
 
+    const poll = async () => {
       try {
-        const result = await chrome.storage.local.get('sbm_live_nodes');
-        const liveData = result.sbm_live_nodes;
-        if (!liveData || !Array.isArray(liveData) || liveData.length === 0) return;
+        const result = await chrome.storage.local.get('sbm_active_session');
+        const session: MapSession | null = result.sbm_active_session || null;
+        if (!session) return;
 
-        // Clear the queue
-        await chrome.storage.local.set({ sbm_live_nodes: [] });
-
-        // Process each queued navigation
-        for (const nav of liveData) {
-          const newNode = state.addNode({
-            url: nav.url,
-            title: nav.title,
-            favicon: nav.favicon,
-            parentId: nav.parentId,
-            tabId: nav.tabId,
-            windowId: nav.windowId,
-            edgeType: nav.edgeType || 'click',
-          });
-
-          // Tell background the nodeId we created
-          chrome.runtime.sendMessage({
-            type: 'NODE_CREATED',
-            payload: { nodeId: newNode.id, tabId: nav.tabId },
-          }).catch(() => {});
+        // Only sync if data changed
+        if (session.updatedAt > lastUpdate) {
+          lastUpdate = session.updatedAt;
+          syncFromStorage(session);
         }
-      } catch {
-        // Storage access error
-      }
-    }, 500);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  // Also listen for direct messages
-  useEffect(() => {
-    const listener = (
-      message: { type: string; payload: Record<string, unknown> },
-      _sender: chrome.runtime.MessageSender,
-      sendResponse: (r?: unknown) => void,
-    ) => {
-      const state = useMapStore.getState();
-
-      if (message.type === 'MAP_DATA_UPDATED' && state.isRecording) {
-        const p = message.payload;
-        const newNode = state.addNode({
-          url: p.url as string,
-          title: p.title as string,
-          favicon: (p.favicon as string) || '',
-          parentId: (p.parentId as string) || null,
-          tabId: p.tabId as number,
-          windowId: (p.windowId as number) || 0,
-          edgeType: (p.edgeType as string as any) || 'click',
-        });
-
-        // Sync ID back to background
-        chrome.runtime.sendMessage({
-          type: 'NODE_CREATED',
-          payload: { nodeId: newNode.id, tabId: p.tabId },
-        }).catch(() => {});
-
-        sendResponse({ status: 'ok', nodeId: newNode.id });
-      } else if (message.type === 'PAGE_METADATA') {
-        const p = message.payload;
-        if (p.nodeId) {
-          state.updateNode(p.nodeId as string, {
-            ...(p.title ? { title: p.title as string } : {}),
-            ...(p.favicon ? { favicon: p.favicon as string } : {}),
-          });
-        }
-        sendResponse({ status: 'ok' });
-      }
-
-      return true;
+      } catch {}
     };
 
-    chrome.runtime.onMessage.addListener(listener);
-    return () => chrome.runtime.onMessage.removeListener(listener);
-  }, []);
+    // Poll every 500ms
+    const interval = setInterval(poll, 500);
+
+    // Also listen for storage changes (faster than polling)
+    const storageListener = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      area: string,
+    ) => {
+      if (area === 'local' && changes.sbm_active_session?.newValue) {
+        const session = changes.sbm_active_session.newValue as MapSession;
+        if (session.updatedAt > lastUpdate) {
+          lastUpdate = session.updatedAt;
+          syncFromStorage(session);
+        }
+      }
+    };
+
+    chrome.storage.onChanged.addListener(storageListener);
+
+    return () => {
+      clearInterval(interval);
+      chrome.storage.onChanged.removeListener(storageListener);
+    };
+  }, [syncFromStorage]);
 
   if (isLoading) {
     return (

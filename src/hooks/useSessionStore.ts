@@ -26,18 +26,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   loadSessions: async () => {
     set({ isLoading: true });
-    const mapSessions = await storage.getSessions();
-    const sessions: BrowsingSession[] = mapSessions.map((s) => ({
-      id: s.id,
-      name: s.name,
-      startedAt: s.createdAt,
-      endedAt: s.isActive ? null : s.updatedAt,
-      isActive: s.isActive,
-      nodeCount: s.stats.totalNodes,
-      maxDepth: s.stats.maxDepth,
-      domains: s.stats.domains,
-    }));
-    set({ sessions, isLoading: false });
+    try {
+      const mapSessions = await storage.getSessions();
+      const sessions: BrowsingSession[] = mapSessions.map((s) => ({
+        id: s.id,
+        name: s.name,
+        startedAt: s.createdAt,
+        endedAt: s.isActive ? null : s.updatedAt,
+        isActive: s.isActive,
+        nodeCount: Object.keys(s.nodes || {}).length,
+        maxDepth: s.stats?.maxDepth || 0,
+        domains: s.stats?.domains || [],
+      }));
+      set({ sessions, isLoading: false });
+    } catch {
+      set({ sessions: [], isLoading: false });
+    }
   },
 
   deleteSession: async (id) => {
