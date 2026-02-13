@@ -28,16 +28,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ isLoading: true });
     try {
       const mapSessions = await storage.getSessions();
-      const sessions: BrowsingSession[] = mapSessions.map((s) => ({
-        id: s.id,
-        name: s.name,
-        startedAt: s.createdAt,
-        endedAt: s.isActive ? null : s.updatedAt,
-        isActive: s.isActive,
-        nodeCount: Object.keys(s.nodes || {}).length,
-        maxDepth: s.stats?.maxDepth || 0,
-        domains: s.stats?.domains || [],
-      }));
+      const sessions: BrowsingSession[] = mapSessions.map((s) => {
+        const nodeCount = Object.keys(s.nodes || {}).length;
+        const nodeList = Object.values(s.nodes || {});
+        const maxDepth = nodeList.length > 0
+          ? Math.max(...nodeList.map((n) => n.depth || 0))
+          : 0;
+        const domains = [...new Set(nodeList.map((n) => n.domain).filter(Boolean))];
+
+        return {
+          id: s.id,
+          name: s.name,
+          startedAt: s.createdAt,
+          endedAt: s.isActive ? null : s.updatedAt,
+          isActive: s.isActive,
+          nodeCount,
+          maxDepth,
+          domains,
+        };
+      });
       set({ sessions, isLoading: false });
     } catch {
       set({ sessions: [], isLoading: false });
@@ -46,6 +55,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   deleteSession: async (id) => {
     await storage.deleteSession(id);
+    // Reload immediately
     await get().loadSessions();
   },
 
