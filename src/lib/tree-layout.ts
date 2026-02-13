@@ -8,10 +8,10 @@ interface LayoutConfig {
 }
 
 const DEFAULTS: LayoutConfig = {
-  nodeWidth: 200,
-  nodeHeight: 60,
-  horizontalGap: 40,
-  verticalGap: 80,
+  nodeWidth: 220,
+  nodeHeight: 56,
+  horizontalGap: 32,
+  verticalGap: 72,
 };
 
 export function calculateTreeLayout(
@@ -21,11 +21,24 @@ export function calculateTreeLayout(
 ): Record<string, NodePosition> {
   const cfg = { ...DEFAULTS, ...config };
   const positions: Record<string, NodePosition> = {};
-  let offsetX = 0;
+
+  if (rootIds.length === 0) return positions;
+
+  let globalOffsetX = 0;
 
   for (const rootId of rootIds) {
-    const width = layoutSubtree(rootId, nodes, cfg, positions, offsetX, 0);
-    offsetX += width + cfg.horizontalGap * 2;
+    if (!nodes[rootId]) continue;
+
+    const subtreeWidth = layoutSubtree(
+      rootId,
+      nodes,
+      cfg,
+      positions,
+      globalOffsetX,
+      0,
+    );
+
+    globalOffsetX += subtreeWidth + cfg.horizontalGap * 3;
   }
 
   return positions;
@@ -42,51 +55,81 @@ function layoutSubtree(
   const node = nodes[nodeId];
   if (!node) return 0;
 
-  const visibleChildren = node.isCollapsed
+  const y = depth * (cfg.nodeHeight + cfg.verticalGap);
+
+  // Get visible children
+  const childIds = node.isCollapsed
     ? []
     : node.children.filter((id) => nodes[id]);
 
-  if (visibleChildren.length === 0) {
+  // Leaf node
+  if (childIds.length === 0) {
     positions[nodeId] = {
       x: startX,
-      y: depth * (cfg.nodeHeight + cfg.verticalGap),
+      y,
       width: cfg.nodeWidth,
       height: cfg.nodeHeight,
     };
     return cfg.nodeWidth;
   }
 
+  // Layout children first
   let currentX = startX;
-  let totalWidth = 0;
+  const childWidths: number[] = [];
 
-  for (let i = 0; i < visibleChildren.length; i++) {
-    const childWidth = layoutSubtree(
-      visibleChildren[i],
+  for (let i = 0; i < childIds.length; i++) {
+    const w = layoutSubtree(
+      childIds[i],
       nodes,
       cfg,
       positions,
       currentX,
       depth + 1,
     );
-    if (i < visibleChildren.length - 1) {
-      currentX += childWidth + cfg.horizontalGap;
-      totalWidth += childWidth + cfg.horizontalGap;
+    childWidths.push(w);
+
+    if (i < childIds.length - 1) {
+      currentX += w + cfg.horizontalGap;
     } else {
-      totalWidth += childWidth;
+      currentX += w;
     }
   }
 
-  totalWidth = Math.max(totalWidth, cfg.nodeWidth);
-  const centerX = startX + (totalWidth - cfg.nodeWidth) / 2;
+  // Total width of all children
+  const totalChildrenWidth = currentX - startX;
+  const subtreeWidth = Math.max(totalChildrenWidth, cfg.nodeWidth);
+
+  // Center parent above children
+  let parentX: number;
+
+  if (childIds.length === 1) {
+    // Single child — center parent above it
+    const childPos = positions[childIds[0]];
+    parentX = childPos
+      ? childPos.x + childPos.width / 2 - cfg.nodeWidth / 2
+      : startX;
+  } else {
+    // Multiple children — center between first and last
+    const firstChild = positions[childIds[0]];
+    const lastChild = positions[childIds[childIds.length - 1]];
+
+    if (firstChild && lastChild) {
+      const centerOfChildren =
+        (firstChild.x + lastChild.x + lastChild.width) / 2;
+      parentX = centerOfChildren - cfg.nodeWidth / 2;
+    } else {
+      parentX = startX + (subtreeWidth - cfg.nodeWidth) / 2;
+    }
+  }
 
   positions[nodeId] = {
-    x: centerX,
-    y: depth * (cfg.nodeHeight + cfg.verticalGap),
+    x: parentX,
+    y,
     width: cfg.nodeWidth,
     height: cfg.nodeHeight,
   };
 
-  return totalWidth;
+  return subtreeWidth;
 }
 
 export function getEdgePath(
@@ -97,6 +140,10 @@ export function getEdgePath(
   const sy = source.y + source.height;
   const tx = target.x + target.width / 2;
   const ty = target.y;
-  const midY = (sy + ty) / 2;
-  return `M ${sx} ${sy} C ${sx} ${midY}, ${tx} ${midY}, ${tx} ${ty}`;
+
+  // Smooth bezier curve
+  const dy = ty - sy;
+  const controlOffset = Math.min(dy * 0.5, 40);
+
+  return `M ${sx} ${sy} C ${sx} ${sy + controlOffset}, ${tx} ${ty - controlOffset}, ${tx} ${ty}`;
 }

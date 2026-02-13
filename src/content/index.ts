@@ -1,21 +1,42 @@
 function extractAndSendMetadata() {
   try {
-    const desc = (document.querySelector('meta[name="description"]') as HTMLMetaElement)?.content;
-    const ogImage = (document.querySelector('meta[property="og:image"]') as HTMLMetaElement)?.content;
-    const wordCount = (document.body?.innerText || '').split(/\s+/).filter(Boolean).length;
+    const url = window.location.href;
 
-    chrome.runtime.sendMessage({
-      type: 'PAGE_METADATA',
-      payload: { url: window.location.href, description: desc, ogImage, wordCount },
-      timestamp: Date.now(),
-    }).catch(() => {});
+    // Skip non-http pages
+    if (!url.startsWith('http')) return;
+
+    const desc = (
+      document.querySelector('meta[name="description"]') as HTMLMetaElement
+    )?.content;
+    const ogImage = (
+      document.querySelector('meta[property="og:image"]') as HTMLMetaElement
+    )?.content;
+    const wordCount = (document.body?.innerText || '')
+      .split(/\s+/)
+      .filter(Boolean).length;
+
+    chrome.runtime
+      .sendMessage({
+        type: 'PAGE_METADATA',
+        payload: {
+          url,
+          description: desc || undefined,
+          ogImage: ogImage || undefined,
+          wordCount,
+        },
+        timestamp: Date.now(),
+      })
+      .catch(() => {
+        // Extension context invalidated — ignore
+      });
   } catch {
-    // extension context invalidated
+    // Silently fail
   }
 }
 
+// Run after page fully loads
 if (document.readyState === 'complete') {
-  setTimeout(extractAndSendMetadata, 500);
+  setTimeout(extractAndSendMetadata, 800);
 } else {
-  window.addEventListener('load', () => setTimeout(extractAndSendMetadata, 500));
+  window.addEventListener('load', () => setTimeout(extractAndSendMetadata, 800));
 }

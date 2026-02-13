@@ -4,10 +4,12 @@
   height: 100%;
   overflow: hidden;
   background-color: #0f172a;
-  background-image: radial-gradient(circle, rgba(99, 102, 241, 0.05) 1px, transparent 1px);
+  background-image:
+    radial-gradient(circle, rgba(99, 102, 241, 0.04) 1px, transparent 1px);
   background-size: 24px 24px;
   cursor: grab;
   user-select: none;
+  touch-action: none;
 }
 
 .map-canvas:active {
@@ -16,38 +18,80 @@
 
 .map-viewport {
   position: absolute;
+  left: 0;
+  top: 0;
   transform-origin: 0 0;
   will-change: transform;
 }
 
+/* ===== Nodes ===== */
 .map-node {
   position: absolute;
   border-radius: 12px;
-  background: rgba(30, 41, 59, 0.9);
+  background: rgba(30, 41, 59, 0.92);
   border: 1.5px solid rgba(99, 102, 241, 0.2);
   backdrop-filter: blur(8px);
   cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.15s ease,
+    opacity 0.2s ease;
+  will-change: transform, opacity;
 }
 
 .map-node:hover {
   border-color: rgba(99, 102, 241, 0.5);
-  box-shadow: 0 4px 16px -4px rgba(99, 102, 241, 0.3);
+  box-shadow:
+    0 4px 16px -4px rgba(99, 102, 241, 0.25),
+    0 0 0 1px rgba(99, 102, 241, 0.1);
   transform: translateY(-1px);
   z-index: 10;
 }
 
 .map-node--active {
-  border-color: rgba(34, 197, 94, 0.6);
+  border-color: rgba(34, 197, 94, 0.5);
+  box-shadow: 0 0 16px -4px rgba(34, 197, 94, 0.15);
 }
 
+.map-node--active:hover {
+  border-color: rgba(34, 197, 94, 0.7);
+}
+
+/* ===== Edges ===== */
 .map-edge {
   fill: none;
-  stroke: rgba(99, 102, 241, 0.2);
+  stroke: rgba(99, 102, 241, 0.18);
   stroke-width: 1.5;
+  transition: stroke 0.2s, stroke-width 0.2s;
 }
 
 .map-edge--active {
-  stroke: rgba(99, 102, 241, 0.6);
+  stroke: rgba(99, 102, 241, 0.55);
   stroke-width: 2;
+  filter: drop-shadow(0 0 3px rgba(99, 102, 241, 0.15));
+}
+
+/* ===== Animations ===== */
+@keyframes nodeAppear {
+  0% {
+    opacity: 0;
+    transform: scale(0.6) translateY(8px);
+  }
+  60% {
+    transform: scale(1.03) translateY(-1px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes edgeDraw {
+  from {
+    stroke-dashoffset: 200;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
 }

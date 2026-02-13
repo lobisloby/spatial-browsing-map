@@ -1,12 +1,7 @@
 import { create } from 'zustand';
 import type {
-  MapNode,
-  MapEdge,
-  MapSession,
-  MapViewport,
-  SessionStats,
-  NodePosition,
-  EdgeType,
+  MapNode, MapEdge, MapSession, MapViewport,
+  SessionStats, NodePosition, EdgeType,
 } from '@/types/map';
 import { generateId, extractDomain } from '@/lib/utils';
 import { calculateTreeLayout } from '@/lib/tree-layout';
@@ -62,7 +57,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   nodes: {},
   edges: [],
   rootNodes: [],
-  viewport: { x: 0, y: 0, zoom: 1, width: 800, height: 600 },
+  viewport: { x: 0, y: 0, zoom: 1, width: 0, height: 0 },
   selectedNodeId: null,
   hoveredNodeId: null,
   isRecording: true,
@@ -90,26 +85,60 @@ export const useMapStore = create<MapState>((set, get) => ({
     }
   },
 
-  addNode: (params) => {
+    addNode: (params) => {
     const state = get();
     const domain = extractDomain(params.url);
 
-    // Check duplicate
-    const existing = Object.values(state.nodes).find(
-      (n) => n.url === params.url && n.tabId === params.tabId,
+    // Only skip exact duplicate if same URL, same tab, same parent
+    // (prevents double-firing from webNavigation events)
+    const isDuplicate = Object.values(state.nodes).some(
+      (n) =>
+        n.url === params.url &&
+        n.tabId === params.tabId &&
+        n.parentId === params.parentId &&
+        Date.now() - n.timestamp < 1000, // Within 1 second = duplicate event
     );
-    if (existing) {
+
+    if (isDuplicate) {
+      // Find the existing node and return it
+      const existing = Object.values(state.nodes).find(
+        (n) => n.url === params.url && n.tabId === params.tabId,
+      )!;
+      return existing;
+    }
+
+    // Check if revisiting same URL on same tab (increment visit count)
+    const revisit = Object.values(state.nodes).find(
+      (n) =>
+        n.url === params.url &&
+        n.tabId === params.tabId &&
+        n.parentId === params.parentId,
+    );
+
+    if (revisit) {
       const updated = {
-        ...existing,
-        visitCount: existing.visitCount + 1,
+        ...revisit,
+        visitCount: revisit.visitCount + 1,
         lastVisited: Date.now(),
         isActive: true,
-        title: params.title || existing.title,
+        title: params.title || revisit.title,
+        favicon: params.favicon || revisit.favicon,
       };
-      set({ nodes: { ...state.nodes, [existing.id]: updated } });
+
+      const newNodes = { ...state.nodes };
+      // Deactivate other nodes on same tab
+      for (const [id, node] of Object.entries(newNodes)) {
+        if (node.tabId === params.tabId) {
+          newNodes[id] = { ...node, isActive: false };
+        }
+      }
+      newNodes[revisit.id] = updated;
+
+      set({ nodes: newNodes });
       return updated;
     }
 
+    // ===== Create new node =====
     const nodeId = generateId();
     const parentNode = params.parentId ? state.nodes[params.parentId] : null;
     const depth = parentNode ? parentNode.depth + 1 : 0;
@@ -131,52 +160,67 @@ export const useMapStore = create<MapState>((set, get) => ({
       isActive: true,
       isCollapsed: false,
       metadata: {},
-      position: { x: 0, y: 0, width: 200, height: 60 },
+      position: { x: 0, y: 0, width: 220, height: 56 },
     };
 
-    const newNodes = { ...state.nodes, [nodeId]: newNode };
-    const newRootNodes = params.parentId
-      ? state.rootNodes
-      : [...state.rootNodes, nodeId];
+    const newNodes = { ...state.nodes };
 
-    // Update parent children
+    // Deactivate other nodes on same tab
+    for (const [id, node] of Object.entries(newNodes)) {
+      if (node.tabId === params.tabId) {
+        newNodes[id] = { ...node, isActive: false };
+      }
+    }
+
+    // Add the new node
+    newNodes[nodeId] = newNode;
+
+    // Update parent's children array
+    let newRootNodes = state.rootNodes;
     if (params.parentId && newNodes[params.parentId]) {
       newNodes[params.parentId] = {
         ...newNodes[params.parentId],
         children: [...newNodes[params.parentId].children, nodeId],
       };
+    } else if (!params.parentId) {
+      // No parent = root node
+      newRootNodes = [...state.rootNodes, nodeId];
+    } else {
+      // Parent ID provided but doesn't exist in our nodes
+      // This happens when parent was from a previous session
+      // Make it a root node instead
+      newRootNodes = [...state.rootNodes, nodeId];
     }
 
     // Create edge
-    const newEdges = params.parentId
-      ? [
-          ...state.edges,
-          {
-            id: `${params.parentId}-${nodeId}`,
-            sourceId: params.parentId,
-            targetId: nodeId,
-            type: (params.edgeType || 'click') as EdgeType,
-            timestamp: Date.now(),
-          },
-        ]
-      : state.edges;
-
-    // Deactivate other nodes on same tab
-    for (const [id, node] of Object.entries(newNodes)) {
-      if (node.tabId === params.tabId && id !== nodeId) {
-        newNodes[id] = { ...node, isActive: false };
-      }
-    }
+    const newEdges =
+      params.parentId && newNodes[params.parentId]
+        ? [
+            ...state.edges,
+            {
+              id: `${params.parentId}-${nodeId}`,
+              sourceId: params.parentId,
+              targetId: nodeId,
+              type: (params.edgeType || 'click') as EdgeType,
+              timestamp: Date.now(),
+            },
+          ]
+        : state.edges;
 
     set({ nodes: newNodes, edges: newEdges, rootNodes: newRootNodes });
-    get().saveSession();
+
+    // Auto save
+    setTimeout(() => get().saveSession(), 200);
+
     return newNode;
   },
 
   updateNode: (nodeId, updates) => {
     const { nodes } = get();
     if (!nodes[nodeId]) return;
-    set({ nodes: { ...nodes, [nodeId]: { ...nodes[nodeId], ...updates } } });
+    set({
+      nodes: { ...nodes, [nodeId]: { ...nodes[nodeId], ...updates } },
+    });
   },
 
   removeNode: (nodeId) => {
@@ -195,14 +239,19 @@ export const useMapStore = create<MapState>((set, get) => ({
     if (removed?.parentId && newNodes[removed.parentId]) {
       newNodes[removed.parentId] = {
         ...newNodes[removed.parentId],
-        children: newNodes[removed.parentId].children.filter((id) => id !== nodeId),
+        children: newNodes[removed.parentId].children.filter(
+          (id) => id !== nodeId,
+        ),
       };
     }
 
     set({
       nodes: newNodes,
-      edges: edges.filter((e) => !toRemove.has(e.sourceId) && !toRemove.has(e.targetId)),
+      edges: edges.filter(
+        (e) => !toRemove.has(e.sourceId) && !toRemove.has(e.targetId),
+      ),
       rootNodes: rootNodes.filter((id) => !toRemove.has(id)),
+      selectedNodeId: null,
     });
     get().saveSession();
   },
@@ -212,7 +261,10 @@ export const useMapStore = create<MapState>((set, get) => ({
     const node = nodes[nodeId];
     if (!node || node.children.length === 0) return;
     set({
-      nodes: { ...nodes, [nodeId]: { ...node, isCollapsed: !node.isCollapsed } },
+      nodes: {
+        ...nodes,
+        [nodeId]: { ...node, isCollapsed: !node.isCollapsed },
+      },
     });
   },
 
@@ -222,23 +274,53 @@ export const useMapStore = create<MapState>((set, get) => ({
   setViewport: (v) =>
     set((s) => ({ viewport: { ...s.viewport, ...v } })),
 
-  zoomIn: () =>
-    set((s) => ({
-      viewport: { ...s.viewport, zoom: Math.min(s.viewport.zoom * 1.2, 3) },
-    })),
+  zoomIn: () => {
+    const { viewport } = get();
+    const newZoom = Math.min(viewport.zoom * 1.25, 4);
+    const centerX = viewport.width / 2;
+    const centerY = viewport.height / 2;
+    const scale = newZoom / viewport.zoom;
+    set({
+      viewport: {
+        ...viewport,
+        zoom: newZoom,
+        x: centerX - (centerX - viewport.x) * scale,
+        y: centerY - (centerY - viewport.y) * scale,
+      },
+    });
+  },
 
-  zoomOut: () =>
-    set((s) => ({
-      viewport: { ...s.viewport, zoom: Math.max(s.viewport.zoom / 1.2, 0.2) },
-    })),
+  zoomOut: () => {
+    const { viewport } = get();
+    const newZoom = Math.max(viewport.zoom / 1.25, 0.1);
+    const centerX = viewport.width / 2;
+    const centerY = viewport.height / 2;
+    const scale = newZoom / viewport.zoom;
+    set({
+      viewport: {
+        ...viewport,
+        zoom: newZoom,
+        x: centerX - (centerX - viewport.x) * scale,
+        y: centerY - (centerY - viewport.y) * scale,
+      },
+    });
+  },
 
   fitToView: () => {
-    const { viewport } = get();
-    const positions = get().getNodePositions();
+    const state = get();
+    const { viewport } = state;
+    const positions = state.getNodePositions();
     const list = Object.values(positions);
-    if (list.length === 0) return;
 
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    if (list.length === 0 || viewport.width === 0 || viewport.height === 0) {
+      return;
+    }
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
     for (const p of list) {
       minX = Math.min(minX, p.x);
       minY = Math.min(minY, p.y);
@@ -246,30 +328,36 @@ export const useMapStore = create<MapState>((set, get) => ({
       maxY = Math.max(maxY, p.y + p.height);
     }
 
-    const pad = 80;
-    const w = maxX - minX + pad * 2;
-    const h = maxY - minY + pad * 2;
-    const zoom = Math.min(viewport.width / w, viewport.height / h, 1.5);
+    const padding = 60;
+    const contentWidth = maxX - minX + padding * 2;
+    const contentHeight = maxY - minY + padding * 2;
 
-    set({
-      viewport: {
-        ...viewport,
-        x: -(minX - pad) * zoom + (viewport.width - w * zoom) / 2,
-        y: -(minY - pad) * zoom + (viewport.height - h * zoom) / 2,
-        zoom,
-      },
-    });
+    const zoomX = viewport.width / contentWidth;
+    const zoomY = viewport.height / contentHeight;
+    const zoom = Math.min(zoomX, zoomY, 1.5);
+
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+
+    const x = viewport.width / 2 - centerX * zoom;
+    const y = viewport.height / 2 - centerY * zoom;
+
+    set({ viewport: { ...viewport, x, y, zoom } });
   },
 
   centerOnNode: (nodeId) => {
     const { viewport } = get();
     const pos = get().getNodePositions()[nodeId];
     if (!pos) return;
+
+    const centerX = pos.x + pos.width / 2;
+    const centerY = pos.y + pos.height / 2;
+
     set({
       viewport: {
         ...viewport,
-        x: -pos.x * viewport.zoom + viewport.width / 2 - (pos.width * viewport.zoom) / 2,
-        y: -pos.y * viewport.zoom + viewport.height / 2 - (pos.height * viewport.zoom) / 2,
+        x: viewport.width / 2 - centerX * viewport.zoom,
+        y: viewport.height / 2 - centerY * viewport.zoom,
       },
     });
   },
@@ -338,14 +426,34 @@ export const useMapStore = create<MapState>((set, get) => ({
       createdAt: Date.now(),
       updatedAt: Date.now(),
       isActive: true,
-      stats: { totalNodes: 0, totalEdges: 0, maxDepth: 0, totalBranches: 0, domains: [], duration: 0 },
+      stats: {
+        totalNodes: 0,
+        totalEdges: 0,
+        maxDepth: 0,
+        totalBranches: 0,
+        domains: [],
+        duration: 0,
+      },
     };
-    set({ session: s, nodes: {}, edges: [], rootNodes: [], selectedNodeId: null, isLoading: false });
+    set({
+      session: s,
+      nodes: {},
+      edges: [],
+      rootNodes: [],
+      selectedNodeId: null,
+      isLoading: false,
+    });
     await storage.setActiveSession(s);
   },
 
   clearSession: () => {
-    set({ nodes: {}, edges: [], rootNodes: [], selectedNodeId: null, hoveredNodeId: null });
+    set({
+      nodes: {},
+      edges: [],
+      rootNodes: [],
+      selectedNodeId: null,
+      hoveredNodeId: null,
+    });
     get().saveSession();
   },
 
@@ -358,7 +466,14 @@ export const useMapStore = create<MapState>((set, get) => ({
     const { nodes, edges } = get();
     const list = Object.values(nodes);
     if (list.length === 0) {
-      return { totalNodes: 0, totalEdges: 0, maxDepth: 0, totalBranches: 0, domains: [], duration: 0 };
+      return {
+        totalNodes: 0,
+        totalEdges: 0,
+        maxDepth: 0,
+        totalBranches: 0,
+        domains: [],
+        duration: 0,
+      };
     }
     const domains = [...new Set(list.map((n) => n.domain))];
     const maxDepth = Math.max(...list.map((n) => n.depth));
