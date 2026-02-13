@@ -1,0 +1,7 @@
+/* src/popup/index.css */
+@import '../styles/globals.css';
+
+body {
+  min-width: 320px;
+  margin: 0;
+}

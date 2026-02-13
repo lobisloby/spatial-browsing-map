@@ -1,0 +1,53 @@
+.map-canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: #0f172a;
+  background-image: radial-gradient(circle, rgba(99, 102, 241, 0.05) 1px, transparent 1px);
+  background-size: 24px 24px;
+  cursor: grab;
+  user-select: none;
+}
+
+.map-canvas:active {
+  cursor: grabbing;
+}
+
+.map-viewport {
+  position: absolute;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.map-node {
+  position: absolute;
+  border-radius: 12px;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1.5px solid rgba(99, 102, 241, 0.2);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+}
+
+.map-node:hover {
+  border-color: rgba(99, 102, 241, 0.5);
+  box-shadow: 0 4px 16px -4px rgba(99, 102, 241, 0.3);
+  transform: translateY(-1px);
+  z-index: 10;
+}
+
+.map-node--active {
+  border-color: rgba(34, 197, 94, 0.6);
+}
+
+.map-edge {
+  fill: none;
+  stroke: rgba(99, 102, 241, 0.2);
+  stroke-width: 1.5;
+}
+
+.map-edge--active {
+  stroke: rgba(99, 102, 241, 0.6);
+  stroke-width: 2;
+}
