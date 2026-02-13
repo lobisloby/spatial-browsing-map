@@ -1,8 +1,6 @@
 function extractAndSendMetadata() {
   try {
     const url = window.location.href;
-
-    // Skip non-http pages
     if (!url.startsWith('http')) return;
 
     const desc = (
@@ -11,30 +9,21 @@ function extractAndSendMetadata() {
     const ogImage = (
       document.querySelector('meta[property="og:image"]') as HTMLMetaElement
     )?.content;
-    const wordCount = (document.body?.innerText || '')
-      .split(/\s+/)
-      .filter(Boolean).length;
 
-    chrome.runtime
-      .sendMessage({
-        type: 'PAGE_METADATA',
-        payload: {
-          url,
-          description: desc || undefined,
-          ogImage: ogImage || undefined,
-          wordCount,
-        },
-        timestamp: Date.now(),
-      })
-      .catch(() => {
-        // Extension context invalidated — ignore
-      });
+    chrome.runtime.sendMessage({
+      type: 'PAGE_METADATA',
+      payload: {
+        url,
+        description: desc || undefined,
+        ogImage: ogImage || undefined,
+      },
+      timestamp: Date.now(),
+    }).catch(() => {});
   } catch {
-    // Silently fail
+    // ignore
   }
 }
 
-// Run after page fully loads
 if (document.readyState === 'complete') {
   setTimeout(extractAndSendMetadata, 800);
 } else {

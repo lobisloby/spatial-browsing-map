@@ -18,9 +18,6 @@ const manifest = defineManifest({
     default_popup: 'src/popup/index.html',
     default_title: 'Spatial Browsing Map',
   },
-  side_panel: {
-    default_path: 'src/sidepanel/index.html',
-  },
   background: {
     service_worker: 'src/background/index.ts',
     type: 'module',
@@ -36,10 +33,10 @@ const manifest = defineManifest({
     'tabs',
     'activeTab',
     'storage',
-    'sidePanel',
     'webNavigation',
   ],
   host_permissions: ['<all_urls>'],
+  chrome_url_overrides: {},
 });
 
 export default defineConfig({
@@ -52,12 +49,16 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: process.env.NODE_ENV === 'development',
+    rollupOptions: {
+      input: {
+        map: resolve(__dirname, 'src/map/index.html'),
+        popup: resolve(__dirname, 'src/popup/index.html'),
+      },
+    },
   },
   server: {
     port: 5173,
     strictPort: true,
-    hmr: {
-      port: 5173,
-    },
+    hmr: { port: 5173 },
   },
 });
