@@ -71,7 +71,7 @@ export const SupportPanel: React.FC = () => {
 
       <div className="text-center pt-2">
         <p className="text-2xs text-surface-400">Spatial Browsing Map v1.0.0</p>
-        <p className="text-2xs text-surface-500 mt-0.5">Made with <Heart className="w-3 h-3 inline text-red-500" fill="currentColor" /> for researchers</p>
+        <p className="text-2xs text-surface-500 mt-0.5">Made with AyoubCoder for researchers</p>
       </div>
     </div>
   );

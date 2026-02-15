@@ -89,14 +89,18 @@ export const useMapStore = create<MapState>((set, get) => ({
     }
   },
 
-  syncFromStorage: (session: MapSession) => {
+    syncFromStorage: (session: MapSession) => {
     const state = get();
-    // Only sync if same session
     if (state.session && state.session.id !== session.id) return;
 
     const oldCount = Object.keys(state.nodes).length;
     const newCount = Object.keys(session.nodes || {}).length;
     const isFirstData = oldCount === 0 && newCount > 0;
+
+    // Find active node
+    const activeNode = Object.values(session.nodes || {}).find(n => n.isActive);
+    const prevActiveNode = Object.values(state.nodes).find(n => n.isActive);
+    const activeChanged = activeNode?.id !== prevActiveNode?.id;
 
     set({
       session,
@@ -107,6 +111,30 @@ export const useMapStore = create<MapState>((set, get) => ({
 
     if (isFirstData) {
       setTimeout(() => get().fitToView(), 300);
+    } else if (activeChanged && activeNode) {
+      // Smoothly center on the newly active node
+      // Only if it's off-screen
+      const positions = get().getNodePositions();
+      const pos = positions[activeNode.id];
+      const vp = get().viewport;
+
+      if (pos && vp.width > 0) {
+        // Check if node is visible in current viewport
+        const nodeScreenX = pos.x * vp.zoom + vp.x;
+        const nodeScreenY = pos.y * vp.zoom + vp.y;
+        const margin = 100;
+
+        const isVisible =
+          nodeScreenX > margin &&
+          nodeScreenX < vp.width - margin &&
+          nodeScreenY > margin &&
+          nodeScreenY < vp.height - margin;
+
+        if (!isVisible) {
+          // Smooth center on the active node
+          setTimeout(() => get().centerOnNode(activeNode.id), 50);
+        }
+      }
     }
   },
 

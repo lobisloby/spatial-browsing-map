@@ -1,15 +1,14 @@
 /*
   SPATIAL BROWSING MAP — Background Service Worker
   
-  ONE ROOT RULE:
-  - The very first tab = the ONE AND ONLY root
-  - Every other tab = child of whatever was active when it was opened
-  - Ctrl+T, address bar, link click — ALL become children
-  - The only root is the first tab ever tracked
-  - If a URL already exists in tree → reuse that node
-  - Clicking a link from reused node → new child under it
-  - Nothing deleted, nothing moved
-  - Back/forward → return to existing node
+  ONE ROOT. Everything branches from it.
+  - First tab = root
+  - Every new tab = child of active tab's node
+  - Click link in tab = child of current node
+  - URL exists = reuse node
+  - Tab switch = only visual change (green dot)
+  - Tab close = mark closed, never delete
+  - Nothing moves, nothing is deleted
 */
 
 interface TreeNode {
@@ -61,23 +60,21 @@ interface TreeSession {
 }
 
 // ===== STATE =====
-
-// tabId → nodeId this tab currently points to
 const tabPointer: Map<number, string> = new Map();
-
-// The ONE active tab right now (across all windows)
-// When a new tab opens, THIS is the parent
 let currentActiveTabId: number | null = null;
-
-// tabId → whether first navigation processed
 const tabInitialized: Map<number, boolean> = new Map();
-
-// Debounce
 const tabLastUrl: Map<number, string> = new Map();
 const tabLastTime: Map<number, number> = new Map();
 
 let isRecording = true;
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Separate timers for structural saves vs activation saves
+let structureSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let activationSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Track the last activation to debounce rapid switches
+let lastActivationTime = 0;
+let lastActivatedNodeId: string | null = null;
 
 // ===== HELPERS =====
 function genId(): string {
@@ -120,7 +117,7 @@ async function loadSession(): Promise<TreeSession> {
   return s;
 }
 
-async function saveNow(session: TreeSession): Promise<void> {
+function calcStats(session: TreeSession): void {
   const nodes = Object.values(session.nodes);
   if (nodes.length > 0) {
     const ts = nodes.map(n => n.timestamp);
@@ -133,6 +130,10 @@ async function saveNow(session: TreeSession): Promise<void> {
       duration: nodes.length > 1 ? Math.max(...ts) - Math.min(...ts) : 0,
     };
   }
+}
+
+async function saveNow(session: TreeSession): Promise<void> {
+  calcStats(session);
   session.updatedAt = Date.now();
   await chrome.storage.local.set({ sbm_active_session: session });
 
@@ -144,12 +145,26 @@ async function saveNow(session: TreeSession): Promise<void> {
   await chrome.storage.local.set({ sbm_sessions: list });
 }
 
-function saveLater(session: TreeSession): void {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { saveNow(session); saveTimer = null; }, 200);
+// Save for structural changes (new node, close tab) — fast
+function saveStructure(session: TreeSession): void {
+  if (structureSaveTimer) clearTimeout(structureSaveTimer);
+  structureSaveTimer = setTimeout(() => {
+    saveNow(session);
+    structureSaveTimer = null;
+  }, 150);
 }
 
-// ===== FIND EXISTING NODE BY URL =====
+// Save for activation changes (tab switch) — debounced more
+// because rapid tab switching fires many events
+function saveActivation(session: TreeSession): void {
+  if (activationSaveTimer) clearTimeout(activationSaveTimer);
+  activationSaveTimer = setTimeout(() => {
+    saveNow(session);
+    activationSaveTimer = null;
+  }, 400);
+}
+
+// ===== FIND NODE =====
 function findNodeByUrl(session: TreeSession, url: string): string | null {
   const clean = cleanUrl(url);
   for (const [id, node] of Object.entries(session.nodes)) {
@@ -158,19 +173,8 @@ function findNodeByUrl(session: TreeSession, url: string): string | null {
   return null;
 }
 
-// ===== HAS ANY ROOT? =====
 function hasRoot(session: TreeSession): boolean {
   return session.rootNodes.length > 0;
-}
-
-// ===== GET CURRENT ACTIVE NODE =====
-// Returns the node that the currently active tab points to.
-// This is used as parent for new tabs.
-function getActiveNodeId(): string | null {
-  if (currentActiveTabId !== null && tabPointer.has(currentActiveTabId)) {
-    return tabPointer.get(currentActiveTabId)!;
-  }
-  return null;
 }
 
 // ===== CREATE NODE =====
@@ -192,7 +196,7 @@ function createNode(
     children: [], tabId, windowId,
     timestamp: Date.now(), lastVisited: Date.now(),
     visitCount: 1, depth,
-    isActive: true, isClosed: false, isCollapsed: false,
+    isActive: false, isClosed: false, isCollapsed: false,
     metadata: {},
     position: { x: 0, y: 0, width: 220, height: 56 },
   };
@@ -205,19 +209,29 @@ function createNode(
       type: edgeType, timestamp: Date.now(),
     });
   } else {
-    // Only the very first node becomes root
     session.rootNodes.push(nodeId);
   }
 
   return nodeId;
 }
 
-// ===== SET ACTIVE =====
+// ===== SET ACTIVE (used by both navigation and activation) =====
 function markActive(session: TreeSession, nodeId: string, tabId: number): void {
+  // Only update if actually changed
+  if (lastActivatedNodeId === nodeId) {
+    // Same node, just update timestamp
+    const node = session.nodes[nodeId];
+    if (node) node.lastVisited = Date.now();
+    return;
+  }
+
   tabPointer.set(tabId, nodeId);
+  lastActivatedNodeId = nodeId;
+
   for (const n of Object.values(session.nodes)) {
     n.isActive = n.id === nodeId;
   }
+
   const node = session.nodes[nodeId];
   if (node) {
     node.lastVisited = Date.now();
@@ -226,39 +240,60 @@ function markActive(session: TreeSession, nodeId: string, tabId: number): void {
 }
 
 // ============================================================
-// tabs.onCreated
-// Records that a new tab exists. Node created on first navigation.
+// tabs.onCreated — Just record. No node creation.
 // ============================================================
 chrome.tabs.onCreated.addListener((tab) => {
   if (!tab.id) return;
   tabInitialized.set(tab.id, false);
-  console.log(`[SBM] 📋 Tab ${tab.id} created`);
 });
 
 // ============================================================
-// tabs.onActivated — Track which tab is active (for parent resolution)
+// tabs.onActivated — ONLY moves the green dot.
+// Debounced to handle rapid switching.
 // NEVER creates nodes. NEVER changes tree structure.
 // ============================================================
 chrome.tabs.onActivated.addListener(async (info) => {
-  currentActiveTabId = info.tabId;
+  const tabId = info.tabId;
+  const now = Date.now();
+
+  // Always track which tab is active (for parent resolution)
+  currentActiveTabId = tabId;
 
   if (!isRecording) return;
-  const nodeId = tabPointer.get(info.tabId);
-  if (!nodeId) return;
+
+  // Get the node this tab points to
+  const nodeId = tabPointer.get(tabId);
+
+  if (!nodeId) {
+    // Tab has no node (untracked tab, opened before extension, or chrome:// tab)
+    // Do nothing — don't break the tree
+    return;
+  }
+
+  // Debounce: if switching tabs rapidly (< 100ms apart), skip intermediate ones
+  if (now - lastActivationTime < 100 && lastActivatedNodeId !== nodeId) {
+    // Cancel previous activation save, this one will overwrite
+    if (activationSaveTimer) clearTimeout(activationSaveTimer);
+  }
+  lastActivationTime = now;
+
+  // If same node already active, skip entirely
+  if (lastActivatedNodeId === nodeId) return;
 
   const session = await loadSession();
-  markActive(session, nodeId, info.tabId);
-  saveLater(session);
+
+  // Verify node still exists
+  if (!session.nodes[nodeId]) return;
+
+  // Mark active — ONLY visual change, no structural change
+  markActive(session, nodeId, tabId);
+
+  // Use the slower save for activation (debounced)
+  saveActivation(session);
 });
 
 // ============================================================
-// webNavigation.onCommitted — ALL NODE CREATION HAPPENS HERE
-//
-// Logic:
-// 1. URL already exists in tree? → Reuse that node. Move tab pointer.
-// 2. URL is new + this is the very first node ever? → ROOT
-// 3. URL is new + first navigation in new tab? → Child of active tab's node
-// 4. URL is new + navigation within existing tab? → Child of tab's current node
+// webNavigation.onCommitted — ALL node creation
 // ============================================================
 chrome.webNavigation.onCommitted.addListener(async (details) => {
   if (!isRecording) return;
@@ -271,10 +306,9 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
   const transition = details.transitionType;
   const qualifiers = details.transitionQualifiers || [];
 
-  // Skip reloads
   if (transition === 'reload') return;
 
-  // Debounce
+  // Debounce same URL
   const now = Date.now();
   const prevUrl = tabLastUrl.get(tabId);
   const prevTime = tabLastTime.get(tabId) || 0;
@@ -284,7 +318,6 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
 
   const session = await loadSession();
 
-  // Get tab info
   let title = '', favicon = '', windowId = 0;
   try {
     const tab = await chrome.tabs.get(tabId);
@@ -293,70 +326,39 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
     windowId = tab.windowId ?? 0;
   } catch { return; }
 
-  // ══════════════════════════════════════════════
-  // CHECK: Does this URL already exist in the tree?
-  // ══════════════════════════════════════════════
+  // Check existing
   const existingId = findNodeByUrl(session, url);
 
   if (existingId) {
-    // URL exists → reuse it. No duplicate.
-    // Tab pointer moves to existing node.
-    // Future clicks from this tab branch from HERE.
     markActive(session, existingId, tabId);
     tabInitialized.set(tabId, true);
-
-    const existingNode = session.nodes[existingId];
-    existingNode.visitCount += 1;
-    if (title && title !== existingNode.title) existingNode.title = title;
-    if (favicon) existingNode.favicon = favicon;
-
-    saveLater(session);
-
-    console.log(
-      `[SBM] ↩ REUSE: "${existingNode.title}" | depth:${existingNode.depth} | ` +
-      `tab ${tabId} → points here now`
-    );
+    const node = session.nodes[existingId];
+    node.visitCount += 1;
+    if (title && title !== node.title) node.title = title;
+    if (favicon) node.favicon = favicon;
+    saveStructure(session);
+    console.log(`[SBM] ↩ REUSE: "${node.title}" d${node.depth}`);
     return;
   }
 
-  // ══════════════════════════════════════════════
-  // URL IS NEW → Determine parent and create node
-  // ══════════════════════════════════════════════
-
+  // New URL — determine parent
   let parentId: string | null = null;
   let edgeType = 'click';
   const isFirstNav = !tabInitialized.get(tabId);
 
   if (!hasRoot(session)) {
-    // ── CASE 1: No root exists yet → This is THE root ──
     parentId = null;
     edgeType = 'root';
     tabInitialized.set(tabId, true);
-    console.log(`[SBM] 👑 First ever node → ROOT`);
 
   } else if (isFirstNav) {
-    // ── CASE 2: First navigation in a new tab ──
-    // Parent = whatever tab was active when this tab was created
-    // That's the "active node" at the time
     tabInitialized.set(tabId, true);
 
-    // Find parent: the node of the tab that was active before this one
-    // We use getActiveNodeId() which returns the current active tab's node
-    // But since this tab just became active (onActivated fires before onCommitted),
-    // we need the PREVIOUS active tab's node.
-    // 
-    // Workaround: look through all tabs to find another tab's node.
-    // The opener or the previously active tab.
-    
-    // Try 1: This tab's pointer might already be set if onActivated ran
-    // In that case, look at all OTHER tabs' pointers
+    // Parent = most recently visited node from another tab
     let bestParent: string | null = null;
-
-    // Check all tabs that have nodes, find the most recently visited one
-    // (that's the tab the user was on before opening this new tab)
     let latestVisit = 0;
     for (const [tid, nid] of tabPointer.entries()) {
-      if (tid === tabId) continue; // Skip self
+      if (tid === tabId) continue;
       const node = session.nodes[nid];
       if (node && node.lastVisited > latestVisit) {
         latestVisit = node.lastVisited;
@@ -364,52 +366,33 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
       }
     }
 
-    if (bestParent) {
-      parentId = bestParent;
-      edgeType = 'tab-open';
-      console.log(`[SBM] 🔗 New tab → child of "${session.nodes[bestParent].title}"`);
-    } else {
-      // Fallback: use root
-      parentId = session.rootNodes[0] || null;
-      edgeType = 'tab-open';
-      console.log(`[SBM] 🔗 New tab → child of ROOT (fallback)`);
-    }
+    parentId = bestParent || session.rootNodes[0] || null;
+    edgeType = 'tab-open';
 
   } else {
-    // ── CASE 3: Navigation within existing tab ──
-    // Parent = this tab's current node
     const currentId = tabPointer.get(tabId);
     if (currentId && session.nodes[currentId]) {
       parentId = currentId;
       edgeType = transition === 'typed' ? 'search' : 'click';
     } else {
-      // Safety fallback: attach to root
       parentId = session.rootNodes[0] || null;
       edgeType = 'click';
     }
   }
 
-  // ── CREATE THE NODE ──
-  const nodeId = createNode(
-    session, url, title, favicon,
-    tabId, windowId, parentId, edgeType,
-  );
+  const nodeId = createNode(session, url, title, favicon, tabId, windowId, parentId, edgeType);
   markActive(session, nodeId, tabId);
-  await saveNow(session);
+  await saveNow(session); // Immediate save for new nodes
 
   const node = session.nodes[nodeId];
-  const parentLabel = parentId && session.nodes[parentId]
-    ? `"${session.nodes[parentId].title}" (d${session.nodes[parentId].depth})`
+  const pLabel = parentId && session.nodes[parentId]
+    ? `"${session.nodes[parentId].title}" d${session.nodes[parentId].depth}`
     : 'ROOT';
-
-  console.log(
-    `[SBM] ✅ NEW: "${node.title}" | parent: ${parentLabel} | ` +
-    `depth: ${node.depth} | tab: ${tabId} | ${edgeType}`
-  );
+  console.log(`[SBM] ✅ NEW: "${node.title}" | parent: ${pLabel} | d${node.depth} | ${edgeType}`);
 });
 
 // ============================================================
-// tabs.onUpdated — title/favicon only. No structural change.
+// tabs.onUpdated — title/favicon only
 // ============================================================
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!isRecording) return;
@@ -421,13 +404,14 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const session = await loadSession();
   const node = session.nodes[nodeId];
   if (!node) return;
-  if (changeInfo.title && changeInfo.title !== node.title) node.title = changeInfo.title;
-  if (changeInfo.favIconUrl) node.favicon = changeInfo.favIconUrl;
-  saveLater(session);
+  let changed = false;
+  if (changeInfo.title && changeInfo.title !== node.title) { node.title = changeInfo.title; changed = true; }
+  if (changeInfo.favIconUrl && changeInfo.favIconUrl !== node.favicon) { node.favicon = changeInfo.favIconUrl; changed = true; }
+  if (changed) saveStructure(session);
 });
 
 // ============================================================
-// tabs.onRemoved — mark closed, NEVER delete
+// tabs.onRemoved — mark closed
 // ============================================================
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const nodeId = tabPointer.get(tabId);
@@ -437,24 +421,37 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     if (node) {
       node.isClosed = true;
       node.isActive = false;
-      saveLater(session);
-      console.log(`[SBM] ❌ CLOSED: "${node.title}" → stays in tree`);
+      saveStructure(session);
+      console.log(`[SBM] ❌ CLOSED: "${node.title}"`);
     }
   }
   tabPointer.delete(tabId);
   tabInitialized.delete(tabId);
   tabLastUrl.delete(tabId);
   tabLastTime.delete(tabId);
-  if (currentActiveTabId === tabId) currentActiveTabId = null;
+  if (currentActiveTabId === tabId) {
+    currentActiveTabId = null;
+    lastActivatedNodeId = null;
+  }
 });
 
 // ============================================================
-// INIT
+// Window focus
+// ============================================================
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, windowId });
+    if (tabs[0]?.id) currentActiveTabId = tabs[0].id;
+  } catch {}
+});
+
+// ============================================================
+// Init
 // ============================================================
 chrome.runtime.onInstalled.addListener(async () => {
-  console.log('[SBM] Spatial Browsing Map installed');
+  console.log('[SBM] Installed');
   await loadSession();
-  // Track current active tab
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tabs[0]?.id) currentActiveTabId = tabs[0].id;
@@ -470,17 +467,8 @@ chrome.runtime.onStartup.addListener(async () => {
   } catch {}
 });
 
-// Track window focus for active tab
-chrome.windows.onFocusChanged.addListener(async (windowId) => {
-  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
-  try {
-    const tabs = await chrome.tabs.query({ active: true, windowId });
-    if (tabs[0]?.id) currentActiveTabId = tabs[0].id;
-  } catch {}
-});
-
 // ============================================================
-// MESSAGES
+// Messages
 // ============================================================
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   switch (msg.type) {
@@ -494,9 +482,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     case 'OPEN_MAP_PAGE': {
       const mapUrl = chrome.runtime.getURL('src/map/index.html');
       chrome.tabs.query({}, (tabs) => {
-        const existing = tabs.find(
-          t => t.url?.includes('map/index.html') && t.url?.includes(chrome.runtime.id)
-        );
+        const existing = tabs.find(t => t.url?.includes('map/index.html') && t.url?.includes(chrome.runtime.id));
         if (existing?.id) {
           chrome.tabs.update(existing.id, { active: true });
           if (existing.windowId) chrome.windows.update(existing.windowId, { focused: true });

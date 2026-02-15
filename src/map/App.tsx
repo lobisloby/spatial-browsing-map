@@ -18,7 +18,6 @@ export const MapApp: React.FC = () => {
   const [showSearch, setShowSearch] = useState(false);
   const initialized = useRef(false);
 
-  // Init
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
@@ -26,40 +25,36 @@ export const MapApp: React.FC = () => {
     initSession();
   }, [loadSettings, initSession]);
 
-  // Listen for storage changes from background
+  // Listen for storage changes
   useEffect(() => {
     let lastUpdate = 0;
 
-    // Storage change listener (primary — instant)
-    const onStorageChanged = (
+    const onChanged = (
       changes: { [key: string]: chrome.storage.StorageChange },
       area: string,
     ) => {
-      if (area !== 'local') return;
-      if (!changes.sbm_active_session?.newValue) return;
-
+      if (area !== 'local' || !changes.sbm_active_session?.newValue) return;
       const session = changes.sbm_active_session.newValue as MapSession;
       if (session.updatedAt <= lastUpdate) return;
-
       lastUpdate = session.updatedAt;
       syncFromStorage(session);
     };
 
-    chrome.storage.onChanged.addListener(onStorageChanged);
+    chrome.storage.onChanged.addListener(onChanged);
 
-    // Fallback poll (in case onChanged misses something)
+    // Fallback poll
     const interval = setInterval(async () => {
       try {
-        const result = await chrome.storage.local.get('sbm_active_session');
-        const session = result.sbm_active_session as MapSession | undefined;
-        if (!session || session.updatedAt <= lastUpdate) return;
-        lastUpdate = session.updatedAt;
-        syncFromStorage(session);
+        const r = await chrome.storage.local.get('sbm_active_session');
+        const s = r.sbm_active_session as MapSession | undefined;
+        if (!s || s.updatedAt <= lastUpdate) return;
+        lastUpdate = s.updatedAt;
+        syncFromStorage(s);
       } catch {}
-    }, 2000);
+    }, 3000);
 
     return () => {
-      chrome.storage.onChanged.removeListener(onStorageChanged);
+      chrome.storage.onChanged.removeListener(onChanged);
       clearInterval(interval);
     };
   }, [syncFromStorage]);
