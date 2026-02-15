@@ -59,6 +59,10 @@ export const MapApp: React.FC = () => {
     };
   }, [syncFromStorage]);
 
+  // Handlers for search
+  const handleToggleSearch = () => setShowSearch((prev) => !prev);
+  const handleCloseSearch = () => setShowSearch(false);
+
   if (isLoading) {
     return (
       <div className="w-full h-screen flex flex-col items-center justify-center gap-4 bg-surface-950">
@@ -73,14 +77,17 @@ export const MapApp: React.FC = () => {
     <ErrorBoundary>
       <div className="flex flex-col h-screen w-full overflow-hidden bg-surface-950">
         <Header
-          onToggleSearch={() => setShowSearch(!showSearch)}
+          onToggleSearch={handleToggleSearch}
           showSearch={showSearch}
         />
         <div className="flex flex-1 min-h-0">
           <div className="flex-1 min-w-0 relative">
             <SpatialMap />
           </div>
-          <Sidebar showSearch={showSearch} />
+          <Sidebar 
+            showSearch={showSearch} 
+            onCloseSearch={handleCloseSearch}
+          />
         </div>
         <StatusBar />
       </div>

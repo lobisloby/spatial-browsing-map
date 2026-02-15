@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { FolderOpen, BarChart3, Settings, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { FolderOpen, BarChart3, Settings, Heart, ChevronLeft, ChevronRight, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip } from '../ui/Tooltip';
 import { SessionPanel } from '../panels/SessionPanel';
@@ -17,9 +17,28 @@ const tabs: { id: TabId; icon: typeof FolderOpen; label: string }[] = [
   { id: 'support', icon: Heart, label: 'Support' },
 ];
 
-export const Sidebar: React.FC<{ showSearch: boolean }> = ({ showSearch }) => {
+interface SidebarProps {
+  showSearch: boolean;
+  onCloseSearch: () => void;
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ showSearch, onCloseSearch }) => {
   const [activeTab, setActiveTab] = useState<TabId>('sessions');
   const [collapsed, setCollapsed] = useState(false);
+
+  // Auto-expand sidebar when search is opened
+  useEffect(() => {
+    if (showSearch && collapsed) {
+      setCollapsed(false);
+    }
+  }, [showSearch, collapsed]);
+
+  const handleTabClick = (tabId: TabId) => {
+    setActiveTab(tabId);
+    if (collapsed) setCollapsed(false);
+    // Close search when switching to another tab
+    if (showSearch) onCloseSearch();
+  };
 
   const panel = () => {
     if (showSearch) return <SearchPanel />;
@@ -32,12 +51,36 @@ export const Sidebar: React.FC<{ showSearch: boolean }> = ({ showSearch }) => {
   };
 
   return (
-    <div className={cn('flex shrink-0 border-l border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 transition-all duration-300', collapsed ? 'w-12' : 'w-72')}>
+    <div className={cn(
+      'flex shrink-0 border-l border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 transition-all duration-300',
+      collapsed ? 'w-12' : 'w-72'
+    )}>
       <div className="w-12 shrink-0 flex flex-col items-center py-2 gap-1 border-l border-surface-200 dark:border-surface-800 bg-surface-50 dark:bg-surface-950">
+        
+        {/* Search button in sidebar - shows when search is active */}
+        <Tooltip content={showSearch ? 'Close search' : 'Search'} side="left">
+          <button
+            onClick={showSearch ? onCloseSearch : undefined}
+            className={cn(
+              'w-9 h-9 rounded-lg flex items-center justify-center transition-all',
+              showSearch
+                ? 'bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400'
+                : 'hidden'
+            )}
+          >
+            <Search className="w-4 h-4" />
+          </button>
+        </Tooltip>
+
+        {/* Divider when search is active */}
+        {showSearch && (
+          <div className="w-6 h-px bg-surface-200 dark:bg-surface-700 my-1" />
+        )}
+
         {tabs.map((tab) => (
           <Tooltip key={tab.id} content={tab.label} side="left">
             <button
-              onClick={() => { setActiveTab(tab.id); if (collapsed) setCollapsed(false); }}
+              onClick={() => handleTabClick(tab.id)}
               className={cn(
                 'w-9 h-9 rounded-lg flex items-center justify-center transition-all',
                 activeTab === tab.id && !showSearch
@@ -49,7 +92,9 @@ export const Sidebar: React.FC<{ showSearch: boolean }> = ({ showSearch }) => {
             </button>
           </Tooltip>
         ))}
+
         <div className="flex-1" />
+
         <Tooltip content={collapsed ? 'Expand' : 'Collapse'} side="left">
           <button
             onClick={() => setCollapsed(!collapsed)}
@@ -59,7 +104,12 @@ export const Sidebar: React.FC<{ showSearch: boolean }> = ({ showSearch }) => {
           </button>
         </Tooltip>
       </div>
-      {!collapsed && <div className="flex-1 min-w-0 overflow-y-auto">{panel()}</div>}
+
+      {!collapsed && (
+        <div className="flex-1 min-w-0 overflow-y-auto">
+          {panel()}
+        </div>
+      )}
     </div>
   );
 };
