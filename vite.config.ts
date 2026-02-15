@@ -17,6 +17,11 @@ const manifest = defineManifest({
   action: {
     default_popup: 'src/popup/index.html',
     default_title: 'Spatial Browsing Map',
+    default_icon: {
+      '16': 'icons/icon16.png',
+      '32': 'icons/icon32.png',
+      '48': 'icons/icon48.png',
+    },
   },
   background: {
     service_worker: 'src/background/index.ts',

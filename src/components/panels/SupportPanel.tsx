@@ -1,9 +1,8 @@
 import React from 'react';
-import { Coffee, Heart, Star, ExternalLink, MessageCircle, Github, Citrus } from 'lucide-react';
+import { Coffee, Heart, Star, ExternalLink, MessageCircle, Github } from 'lucide-react';
 import { Separator } from '../ui/Separator';
 
 const COFFEE_URL = 'https://buymeacoffee.com/YOUR_USERNAME';
-const LEMON_URL = 'https://YOUR_STORE.lemonsqueezy.com';
 const GITHUB_URL = 'https://github.com/YOUR_USERNAME/spatial-browsing-map';
 
 export const SupportPanel: React.FC = () => {
@@ -32,22 +31,6 @@ export const SupportPanel: React.FC = () => {
           <div className="text-left flex-1">
             <div className="font-semibold text-sm">Buy Me a Coffee</div>
             <div className="text-xs text-white/80">One-time support</div>
-          </div>
-          <ExternalLink className="w-4 h-4 opacity-60" />
-        </div>
-      </button>
-
-      <button
-        onClick={() => open(LEMON_URL)}
-        className="w-full group rounded-xl bg-gradient-to-r from-yellow-400 to-lime-500 p-4 text-surface-900 hover:shadow-lg transition-all active:scale-[0.98]"
-      >
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-surface-900/10 flex items-center justify-center">
-            <Citrus className="w-5 h-5" />
-          </div>
-          <div className="text-left flex-1">
-            <div className="font-semibold text-sm">Lemon Squeezy</div>
-            <div className="text-xs text-surface-700">Pro license & extras</div>
           </div>
           <ExternalLink className="w-4 h-4 opacity-60" />
         </div>
