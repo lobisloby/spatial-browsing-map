@@ -2,7 +2,7 @@ import type { MapSession } from '../types/map';
 
 const KEYS = {
   SESSIONS: 'sbm_sessions',
-  ACTIVE_SESSION: 'sbm_active_session',
+  ACTIVE: 'sbm_active_session',
   SETTINGS: 'sbm_settings',
 } as const;
 
@@ -25,88 +25,77 @@ export const DEFAULT_SETTINGS: AppSettings = {
   layoutDirection: 'vertical',
   animationsEnabled: true,
   showMinimap: true,
-  excludedDomains: ['chrome://', 'chrome-extension://', 'about:'],
+  excludedDomains: [],
 };
 
 class StorageService {
-  private async get<T>(key: string): Promise<T | null> {
+  private get<T>(key: string): Promise<T | null> {
     return new Promise((resolve) => {
-      chrome.storage.local.get(key, (result) => {
-        resolve((result[key] as T) ?? null);
-      });
+      chrome.storage.local.get(key, (r) => resolve((r[key] as T) ?? null));
     });
   }
-
-  private async set<T>(key: string, value: T): Promise<void> {
+  private set<T>(key: string, value: T): Promise<void> {
     return new Promise((resolve) => {
       chrome.storage.local.set({ [key]: value }, resolve);
     });
   }
-
-  private async remove(key: string): Promise<void> {
+  private remove(key: string): Promise<void> {
     return new Promise((resolve) => {
       chrome.storage.local.remove(key, resolve);
     });
   }
 
-  // ===== Sessions =====
   async getSessions(): Promise<MapSession[]> {
     return (await this.get<MapSession[]>(KEYS.SESSIONS)) ?? [];
   }
 
   async saveSession(session: MapSession): Promise<void> {
-    const sessions = await this.getSessions();
-    const idx = sessions.findIndex((s) => s.id === session.id);
-    if (idx >= 0) {
-      sessions[idx] = session;
-    } else {
-      sessions.unshift(session);
-    }
-    await this.set(KEYS.SESSIONS, sessions);
+    const list = await this.getSessions();
+    const idx = list.findIndex((s) => s.id === session.id);
+    if (idx >= 0) list[idx] = session;
+    else list.unshift(session);
+    await this.set(KEYS.SESSIONS, list);
   }
 
   async deleteSession(id: string): Promise<void> {
-    // Remove from sessions list
-    const sessions = await this.getSessions();
-    const filtered = sessions.filter((s) => s.id !== id);
+    // Remove from list
+    const list = await this.getSessions();
+    const filtered = list.filter((s) => s.id !== id);
     await this.set(KEYS.SESSIONS, filtered);
 
-    // If it's the active session, clear it
+    // If active session, clear it
     const active = await this.getActiveSession();
-    if (active && active.id === id) {
-      await this.remove(KEYS.ACTIVE_SESSION);
+    if (active?.id === id) {
+      await this.remove(KEYS.ACTIVE);
     }
   }
 
   async getActiveSession(): Promise<MapSession | null> {
-    return this.get<MapSession>(KEYS.ACTIVE_SESSION);
+    return this.get<MapSession>(KEYS.ACTIVE);
   }
 
   async setActiveSession(session: MapSession): Promise<void> {
-    await this.set(KEYS.ACTIVE_SESSION, session);
-    // Also update in sessions list
+    await this.set(KEYS.ACTIVE, session);
     await this.saveSession(session);
   }
 
   async clearActiveSession(): Promise<void> {
-    await this.remove(KEYS.ACTIVE_SESSION);
+    await this.remove(KEYS.ACTIVE);
   }
 
-  // ===== Settings =====
   async getSettings(): Promise<AppSettings> {
     return (await this.get<AppSettings>(KEYS.SETTINGS)) ?? DEFAULT_SETTINGS;
   }
 
-  async saveSettings(settings: AppSettings): Promise<void> {
-    await this.set(KEYS.SETTINGS, settings);
+  async saveSettings(s: AppSettings): Promise<void> {
+    await this.set(KEYS.SETTINGS, s);
   }
 
-  // ===== Export =====
-  async exportSession(sessionId: string): Promise<string> {
-    const sessions = await this.getSessions();
-    const session = sessions.find((s) => s.id === sessionId);
-    if (!session) throw new Error('Session not found');
-    return JSON.stringify(session, null, 2);
+  async exportSession(id: string): Promise<string> {
+    const list = await this.getSessions();
+    const s = list.find((x) => x.id === id);
+    if (!s) throw new Error('Not found');
+    return JSON.stringify(s, null, 2);
   }
 }
 

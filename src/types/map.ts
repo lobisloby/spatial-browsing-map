@@ -13,6 +13,7 @@ export interface MapNode {
   visitCount: number;
   depth: number;
   isActive: boolean;
+  isClosed: boolean;
   isCollapsed: boolean;
   metadata: NodeMetadata;
   position: NodePosition;

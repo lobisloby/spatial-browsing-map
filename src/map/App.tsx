@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useMapStore } from '@/hooks/useMapStore';
 import { useSettingsStore } from '@/hooks/useSettingsStore';
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary';
@@ -26,46 +26,41 @@ export const MapApp: React.FC = () => {
     initSession();
   }, [loadSettings, initSession]);
 
-  // Poll storage for updates from background
+  // Listen for storage changes from background
   useEffect(() => {
     let lastUpdate = 0;
 
-    const poll = async () => {
-      try {
-        const result = await chrome.storage.local.get('sbm_active_session');
-        const session: MapSession | null = result.sbm_active_session || null;
-        if (!session) return;
-
-        // Only sync if data changed
-        if (session.updatedAt > lastUpdate) {
-          lastUpdate = session.updatedAt;
-          syncFromStorage(session);
-        }
-      } catch {}
-    };
-
-    // Poll every 500ms
-    const interval = setInterval(poll, 500);
-
-    // Also listen for storage changes (faster than polling)
-    const storageListener = (
+    // Storage change listener (primary — instant)
+    const onStorageChanged = (
       changes: { [key: string]: chrome.storage.StorageChange },
       area: string,
     ) => {
-      if (area === 'local' && changes.sbm_active_session?.newValue) {
-        const session = changes.sbm_active_session.newValue as MapSession;
-        if (session.updatedAt > lastUpdate) {
-          lastUpdate = session.updatedAt;
-          syncFromStorage(session);
-        }
-      }
+      if (area !== 'local') return;
+      if (!changes.sbm_active_session?.newValue) return;
+
+      const session = changes.sbm_active_session.newValue as MapSession;
+      if (session.updatedAt <= lastUpdate) return;
+
+      lastUpdate = session.updatedAt;
+      syncFromStorage(session);
     };
 
-    chrome.storage.onChanged.addListener(storageListener);
+    chrome.storage.onChanged.addListener(onStorageChanged);
+
+    // Fallback poll (in case onChanged misses something)
+    const interval = setInterval(async () => {
+      try {
+        const result = await chrome.storage.local.get('sbm_active_session');
+        const session = result.sbm_active_session as MapSession | undefined;
+        if (!session || session.updatedAt <= lastUpdate) return;
+        lastUpdate = session.updatedAt;
+        syncFromStorage(session);
+      } catch {}
+    }, 2000);
 
     return () => {
+      chrome.storage.onChanged.removeListener(onStorageChanged);
       clearInterval(interval);
-      chrome.storage.onChanged.removeListener(storageListener);
     };
   }, [syncFromStorage]);
 

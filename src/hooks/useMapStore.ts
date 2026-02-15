@@ -89,38 +89,14 @@ export const useMapStore = create<MapState>((set, get) => ({
     }
   },
 
-  // Sync data from chrome.storage (background writes, we read)
   syncFromStorage: (session: MapSession) => {
     const state = get();
-
-    // Don't sync if we're viewing a different session
+    // Only sync if same session
     if (state.session && state.session.id !== session.id) return;
 
-    // Check if data actually changed
-    const currentNodeCount = Object.keys(state.nodes).length;
-    const newNodeCount = Object.keys(session.nodes || {}).length;
-    const currentEdgeCount = state.edges.length;
-    const newEdgeCount = (session.edges || []).length;
-
-    if (currentNodeCount === newNodeCount && currentEdgeCount === newEdgeCount) {
-      // Only update titles/favicons/isActive without re-rendering tree
-      let changed = false;
-      const updatedNodes = { ...state.nodes };
-      for (const [id, newNode] of Object.entries(session.nodes || {})) {
-        const old = updatedNodes[id];
-        if (old && (old.title !== newNode.title || old.favicon !== newNode.favicon || old.isActive !== newNode.isActive)) {
-          updatedNodes[id] = { ...old, title: newNode.title, favicon: newNode.favicon, isActive: newNode.isActive };
-          changed = true;
-        }
-      }
-      if (changed) {
-        set({ nodes: updatedNodes, session: { ...session, nodes: updatedNodes } });
-      }
-      return;
-    }
-
-    // Real structural change — new nodes or edges
-    const shouldFit = currentNodeCount === 0 && newNodeCount > 0;
+    const oldCount = Object.keys(state.nodes).length;
+    const newCount = Object.keys(session.nodes || {}).length;
+    const isFirstData = oldCount === 0 && newCount > 0;
 
     set({
       session,
@@ -129,18 +105,16 @@ export const useMapStore = create<MapState>((set, get) => ({
       rootNodes: session.rootNodes || [],
     });
 
-    // Auto-fit when first nodes appear
-    if (shouldFit) {
-      setTimeout(() => get().fitToView(), 200);
+    if (isFirstData) {
+      setTimeout(() => get().fitToView(), 300);
     }
   },
 
-  // Used only for demo data / manual additions from the map page
+  // For demo/manual additions only — real nodes come from background via storage sync
   addNode: (params) => {
     const state = get();
     const domain = extractDomain(params.url);
     const now = Date.now();
-
     const nodeId = generateId();
     const parentNode = params.parentId ? state.nodes[params.parentId] : null;
     const depth = parentNode ? parentNode.depth + 1 : 0;
@@ -160,17 +134,13 @@ export const useMapStore = create<MapState>((set, get) => ({
       visitCount: 1,
       depth,
       isActive: true,
+      isClosed: false,
       isCollapsed: false,
       metadata: {},
       position: { x: 0, y: 0, width: 220, height: 56 },
     };
 
     const newNodes = { ...state.nodes };
-    for (const [id, node] of Object.entries(newNodes)) {
-      if (node.tabId === params.tabId) {
-        newNodes[id] = { ...node, isActive: false };
-      }
-    }
     newNodes[nodeId] = newNode;
 
     let newRootNodes = [...state.rootNodes];
@@ -188,7 +158,7 @@ export const useMapStore = create<MapState>((set, get) => ({
           id: `${params.parentId}-${nodeId}`,
           sourceId: params.parentId,
           targetId: nodeId,
-          type: (params.edgeType || 'click') as EdgeType,
+          type: (params.edgeType || 'tab-open') as EdgeType,
           timestamp: now,
         }]
       : [...state.edges];
@@ -243,18 +213,16 @@ export const useMapStore = create<MapState>((set, get) => ({
 
   zoomIn: () => {
     const { viewport: vp } = get();
-    const newZoom = Math.min(vp.zoom * 1.25, 4);
-    const cx = vp.width / 2, cy = vp.height / 2;
-    const s = newZoom / vp.zoom;
-    set({ viewport: { ...vp, zoom: newZoom, x: cx - (cx - vp.x) * s, y: cy - (cy - vp.y) * s } });
+    const z = Math.min(vp.zoom * 1.25, 4);
+    const cx = vp.width / 2, cy = vp.height / 2, s = z / vp.zoom;
+    set({ viewport: { ...vp, zoom: z, x: cx - (cx - vp.x) * s, y: cy - (cy - vp.y) * s } });
   },
 
   zoomOut: () => {
     const { viewport: vp } = get();
-    const newZoom = Math.max(vp.zoom / 1.25, 0.1);
-    const cx = vp.width / 2, cy = vp.height / 2;
-    const s = newZoom / vp.zoom;
-    set({ viewport: { ...vp, zoom: newZoom, x: cx - (cx - vp.x) * s, y: cy - (cy - vp.y) * s } });
+    const z = Math.max(vp.zoom / 1.25, 0.1);
+    const cx = vp.width / 2, cy = vp.height / 2, s = z / vp.zoom;
+    set({ viewport: { ...vp, zoom: z, x: cx - (cx - vp.x) * s, y: cy - (cy - vp.y) * s } });
   },
 
   fitToView: () => {
@@ -265,15 +233,12 @@ export const useMapStore = create<MapState>((set, get) => ({
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const p of list) {
-      minX = Math.min(minX, p.x);
-      minY = Math.min(minY, p.y);
-      maxX = Math.max(maxX, p.x + p.width);
-      maxY = Math.max(maxY, p.y + p.height);
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + p.width); maxY = Math.max(maxY, p.y + p.height);
     }
 
     const pad = 80;
-    const cw = maxX - minX + pad * 2;
-    const ch = maxY - minY + pad * 2;
+    const cw = maxX - minX + pad * 2, ch = maxY - minY + pad * 2;
     const zoom = Math.min(vp.width / cw, vp.height / ch, 1.5);
     const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
     set({ viewport: { ...vp, x: vp.width / 2 - cx * zoom, y: vp.height / 2 - cy * zoom, zoom } });
@@ -288,7 +253,7 @@ export const useMapStore = create<MapState>((set, get) => ({
 
   setRecording: (r) => {
     set({ isRecording: r });
-    chrome.runtime.sendMessage({ type: r ? 'GET_RECORDING_STATE' : 'TOGGLE_RECORDING' }).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'TOGGLE_RECORDING' }).catch(() => {});
   },
 
   setSearchQuery: (q) => {
@@ -306,10 +271,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   saveSession: async () => {
     const { session, nodes, edges, rootNodes } = get();
     if (!session) return;
-    const updated: MapSession = {
-      ...session, nodes, edges, rootNodes,
-      updatedAt: Date.now(), stats: get().getStats(),
-    };
+    const updated: MapSession = { ...session, nodes, edges, rootNodes, updatedAt: Date.now(), stats: get().getStats() };
     set({ session: updated });
     await storage.setActiveSession(updated);
   },
@@ -319,29 +281,17 @@ export const useMapStore = create<MapState>((set, get) => ({
     const sessions = await storage.getSessions();
     const session = sessions.find((s) => s.id === id);
     if (session) {
-      set({
-        session,
-        nodes: session.nodes || {},
-        edges: session.edges || [],
-        rootNodes: session.rootNodes || [],
-        selectedNodeId: null,
-        isLoading: false,
-      });
+      set({ session, nodes: session.nodes || {}, edges: session.edges || [], rootNodes: session.rootNodes || [], selectedNodeId: null, isLoading: false });
       await storage.setActiveSession(session);
       setTimeout(() => get().fitToView(), 200);
-    } else {
-      set({ isLoading: false });
-    }
+    } else set({ isLoading: false });
   },
 
   newSession: async (name = 'New Session') => {
     const { session } = get();
-    if (session && Object.keys(get().nodes).length > 0) {
-      await get().saveSession();
-    }
+    if (session && Object.keys(get().nodes).length > 0) await get().saveSession();
     const s: MapSession = {
-      id: generateId(), name,
-      nodes: {}, edges: [], rootNodes: [],
+      id: generateId(), name, nodes: {}, edges: [], rootNodes: [],
       createdAt: Date.now(), updatedAt: Date.now(), isActive: true,
       stats: { totalNodes: 0, totalEdges: 0, maxDepth: 0, totalBranches: 0, domains: [], duration: 0 },
     };
@@ -352,16 +302,21 @@ export const useMapStore = create<MapState>((set, get) => ({
   renameSession: (name) => {
     const { session } = get();
     if (!session) return;
-    const updated = { ...session, name, updatedAt: Date.now() };
-    set({ session: updated });
-    storage.setActiveSession(updated);
+    const u = { ...session, name, updatedAt: Date.now() };
+    set({ session: u });
+    storage.setActiveSession(u);
   },
 
   deleteCurrentSession: async () => {
     const { session } = get();
     if (session) await storage.deleteSession(session.id);
     await storage.clearActiveSession();
-    await get().newSession('New Session');
+    const remaining = await storage.getSessions();
+    if (remaining.length > 0) {
+      await get().loadSession(remaining[0].id);
+    } else {
+      await get().newSession('New Session');
+    }
   },
 
   deleteSessionById: async (id) => {
@@ -369,7 +324,9 @@ export const useMapStore = create<MapState>((set, get) => ({
     await storage.deleteSession(id);
     if (session?.id === id) {
       await storage.clearActiveSession();
-      await get().newSession('New Session');
+      const remaining = await storage.getSessions();
+      if (remaining.length > 0) await get().loadSession(remaining[0].id);
+      else await get().newSession('New Session');
     }
   },
 
@@ -378,24 +335,19 @@ export const useMapStore = create<MapState>((set, get) => ({
     get().saveSession();
   },
 
-  getNodePositions: () => {
-    const { nodes, rootNodes } = get();
-    return calculateTreeLayout(nodes, rootNodes);
-  },
+  getNodePositions: () => calculateTreeLayout(get().nodes, get().rootNodes),
 
   getStats: (): SessionStats => {
     const { nodes, edges } = get();
     const list = Object.values(nodes);
-    if (list.length === 0) {
-      return { totalNodes: 0, totalEdges: 0, maxDepth: 0, totalBranches: 0, domains: [], duration: 0 };
-    }
-    const domains = [...new Set(list.map((n) => n.domain))];
+    if (list.length === 0) return { totalNodes: 0, totalEdges: 0, maxDepth: 0, totalBranches: 0, domains: [], duration: 0 };
     const ts = list.map((n) => n.timestamp);
     return {
       totalNodes: list.length, totalEdges: edges.length,
       maxDepth: Math.max(...list.map((n) => n.depth)),
       totalBranches: list.filter((n) => n.children.length > 1).length,
-      domains, duration: Math.max(...ts) - Math.min(...ts),
+      domains: [...new Set(list.map((n) => n.domain).filter(Boolean))],
+      duration: Math.max(...ts) - Math.min(...ts),
     };
   },
 }));
