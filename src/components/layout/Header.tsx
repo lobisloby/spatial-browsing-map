@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Search, Play, Pause, Trash2, Download,
   MoreHorizontal, Pencil, Check, X,
@@ -29,6 +29,17 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSearch, showSearch }) =>
 
   const count = Object.keys(nodes).length;
 
+  // Sync recording state from background on mount
+  useEffect(() => {
+    chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATE' })
+      .then((response) => {
+        if (response && typeof response.isRecording === 'boolean') {
+          setRecording(response.isRecording);
+        }
+      })
+      .catch(() => {});
+  }, [setRecording]);
+
   const startEdit = () => {
     setEditName(session?.name || '');
     setIsEditing(true);
@@ -57,12 +68,25 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSearch, showSearch }) =>
     }
   };
 
-  const handleToggleRecording = () => {
-    const newVal = !isRecording;
-    setRecording(newVal);
-    chrome.runtime.sendMessage({
-      type: newVal ? 'GET_RECORDING_STATE' : 'TOGGLE_RECORDING',
-    }).catch(() => {});
+  const handleToggleRecording = async () => {
+    try {
+      // Send TOGGLE_RECORDING to background — it toggles and responds
+      const response = await chrome.runtime.sendMessage({ 
+        type: 'TOGGLE_RECORDING' 
+      });
+
+      // Update local state from background's authoritative response
+      if (response && typeof response.isRecording === 'boolean') {
+        setRecording(response.isRecording);
+      } else {
+        // Fallback: toggle locally
+        setRecording(!isRecording);
+      }
+    } catch (err) {
+      console.error('Failed to toggle recording:', err);
+      // Fallback: toggle locally
+      setRecording(!isRecording);
+    }
   };
 
   return (
@@ -102,6 +126,14 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSearch, showSearch }) =>
           )}
 
           {count > 0 && <Badge variant="primary" size="sm">{count} pages</Badge>}
+
+          {/* Recording status indicator */}
+          <div className="flex items-center gap-1.5 ml-1">
+            <div className={`w-2 h-2 rounded-full ${isRecording ? 'bg-green-500 animate-pulse' : 'bg-surface-500'}`} />
+            <span className="text-2xs text-surface-500">
+              {isRecording ? 'Recording' : 'Paused'}
+            </span>
+          </div>
         </div>
       </div>
 

@@ -280,8 +280,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   },
 
   setRecording: (r) => {
-    set({ isRecording: r });
-    chrome.runtime.sendMessage({ type: 'TOGGLE_RECORDING' }).catch(() => {});
+  set({ isRecording: r });
   },
 
   setSearchQuery: (q) => {
