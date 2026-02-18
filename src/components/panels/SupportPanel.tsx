@@ -2,8 +2,8 @@ import React from 'react';
 import { Coffee, Heart, Star, ExternalLink, MessageCircle, Github } from 'lucide-react';
 import { Separator } from '../ui/Separator';
 
-const COFFEE_URL = 'https://buymeacoffee.com/YOUR_USERNAME';
-const GITHUB_URL = 'https://github.com/YOUR_USERNAME/spatial-browsing-map';
+const COFFEE_URL = 'https://pricetrackerr.lemonsqueezy.com/checkout/buy/de06cd74-d25e-4618-9312-9878330ee0df';
+const GITHUB_URL = 'https://github.com/lobisloby';
 
 export const SupportPanel: React.FC = () => {
   const open = (url: string) => chrome.tabs.create({ url });
@@ -42,7 +42,7 @@ export const SupportPanel: React.FC = () => {
         {[
           { icon: <Star className="w-4 h-4 text-amber-500" />, label: 'Rate on Chrome Store', url: '#' },
           { icon: <Github className="w-4 h-4 text-surface-500" />, label: 'Star on GitHub', url: GITHUB_URL },
-          { icon: <MessageCircle className="w-4 h-4 text-brand-500" />, label: 'Send Feedback', url: `${GITHUB_URL}/issues` },
+          { icon: <MessageCircle className="w-4 h-4 text-brand-500" />, label: 'Send Feedback', url: `${GITHUB_URL}` },
         ].map((item) => (
           <button key={item.label} onClick={() => open(item.url)} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-100 dark:hover:bg-surface-800 transition-colors">
             {item.icon}
